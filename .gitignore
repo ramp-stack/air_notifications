@@ -1,0 +1,12 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+*.p8
+*.pem
+*.swp
+.DS_Store
+
+/.cargo/config.toml
+/AGENTS.md
+/deploy/

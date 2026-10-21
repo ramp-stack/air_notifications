@@ -1,0 +1,35 @@
+[package]
+name = "air_notifications"
+version = "0.1.0"
+edition = "2024"
+authors = ["Caleb Couch <caleb@orange.me>"]
+license = "BSD-3-Clause"
+repository = "https://github.com/ramp-stack/air_notifications"
+documentation = "https://docs.rs/air_notifications"
+readme = "README.md"
+description = "AIR notification contracts and push delivery server"
+include = ["/src/**/*.rs", "/src/server.name", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+
+[features]
+server = [
+    "dep:air_server", "dep:crossfire", "dep:futures", "dep:tokio", "dep:serde_json",
+    "dep:rusqlite", "dep:reqwest", "dep:ring", "dep:base64",
+]
+
+[dependencies]
+air = "3.0.0"
+serde = {version = "1", features = ["derive"]}
+air_server = {version = "1.0.1", optional = true}
+crossfire = {version = "3.1.7", optional = true}
+futures = {version = "0.3", optional = true}
+tokio = {version = "1.53", features = ["sync", "macros", "rt-multi-thread", "time"], optional = true}
+serde_json = {version = "1", optional = true}
+rusqlite = {version = "0.39", features = ["bundled"], optional = true}
+reqwest = {version = "0.12.28", default-features = false, features = ["rustls-tls", "http2", "json"], optional = true}
+ring = {version = "0.17.14", optional = true}
+base64 = {version = "0.22.1", optional = true}
+
+[[bin]]
+name = "air_notifications"
+path = "src/main.rs"
+required-features = ["server"]
