@@ -1,15 +1,15 @@
-#[cfg(feature = "server")]
-pub mod server;
-
 use air::{Contract, Id, Metadata, Name, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 
+#[cfg(feature = "server")]
+pub mod server;
+
 pub type File = (PublicKey, Name);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PushDestination {Apns(String)}
+pub enum PushDestination { Apns(String), Fcm(String), }
 
 #[derive(Clone, Hash, Serialize, Deserialize)]
 pub struct ApnsCredentials {
@@ -19,8 +19,10 @@ pub struct ApnsCredentials {
 }
 impl Debug for ApnsCredentials {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        f.debug_struct("ApnsCredentials").field("key_id", &self.key_id)
-            .field("team_id", &self.team_id).finish_non_exhaustive()
+        f.debug_struct("ApnsCredentials")
+            .field("key_id", &self.key_id)
+            .field("team_id", &self.team_id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -36,12 +38,50 @@ impl Contract for NotificationApplication {
     type Message = ApnsCredentials;
     type Result = bool;
 
-    fn id() -> Id {Id::hash("ramp.notification.application.v1")}
+    fn id() -> Id { Id::hash("ramp.notification.application.v1") }
     fn init((topic, sandbox): Self::Init, metadata: Metadata) -> Self {
-        Self {owner: metadata.signer, topic, sandbox, credentials: None}
+        Self { owner: metadata.signer, topic, sandbox, credentials: None }
     }
     fn apply(&mut self, credentials: ApnsCredentials, metadata: Metadata) -> bool {
-        if metadata.signer != self.owner {return false}
+        if metadata.signer != self.owner { return false; }
+        self.credentials = Some(credentials);
+        true
+    }
+}
+
+#[derive(Clone, Hash, Serialize, Deserialize)]
+pub struct FcmCredentials {
+    pub private_key: String,
+    pub private_key_id: String,
+    pub client_email: String,
+}
+impl Debug for FcmCredentials {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_struct("FcmCredentials")
+            .field("private_key_id", &self.private_key_id)
+            .field("client_email", &self.client_email)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Hash, Serialize, Deserialize)]
+pub struct FcmApplication {
+    pub owner: Name,
+    pub project: String,
+    pub package: String,
+    pub credentials: Option<FcmCredentials>,
+}
+impl Contract for FcmApplication {
+    type Init = (String, String);
+    type Message = FcmCredentials;
+    type Result = bool;
+
+    fn id() -> Id { Id::hash("ramp.notification.fcm.application.v1") }
+    fn init((project, package): Self::Init, metadata: Metadata) -> Self {
+        Self { owner: metadata.signer, project, package, credentials: None }
+    }
+    fn apply(&mut self, credentials: FcmCredentials, metadata: Metadata) -> bool {
+        if metadata.signer != self.owner { return false; }
         self.credentials = Some(credentials);
         true
     }
@@ -67,15 +107,15 @@ impl Contract for Notifications {
     type Message = Notification;
     type Result = bool;
 
-    fn id() -> Id {Id::hash("ramp.notifications.v2")}
+    fn id() -> Id { Id::hash("ramp.notifications.v2") }
     fn init((_installation, application): Self::Init, metadata: Metadata) -> Self {
-        Self {owner: metadata.signer, application, destination: None, files: BTreeMap::new()}
+        Self { owner: metadata.signer, application, destination: None, files: BTreeMap::new() }
     }
     fn apply(&mut self, message: Notification, metadata: Metadata) -> bool {
-        if metadata.signer != self.owner {return false}
+        if metadata.signer != self.owner { return false; }
         match message {
             Notification::Destination(destination) => {
-                if self.destination.as_ref() == Some(&destination) {return false}
+                if self.destination.as_ref() == Some(&destination) { return false; }
                 self.destination = Some(destination);
                 true
             }
@@ -83,7 +123,7 @@ impl Contract for Notifications {
                 self.files.insert(instance, (key, server)) != Some((key, server))
             }
             Notification::Received(instance, key, server) => {
-                if self.files.get(&instance) != Some(&(key, server)) {return false}
+                if self.files.get(&instance) != Some(&(key, server)) { return false; }
                 self.files.remove(&instance);
                 true
             }
@@ -93,5 +133,5 @@ impl Contract for Notifications {
 }
 
 impl Notifications {
-    pub fn server() -> Name {include_str!("server.name").trim().parse().unwrap()}
+    pub fn server() -> Name { include_str!("server.name").trim().parse().unwrap() }
 }
