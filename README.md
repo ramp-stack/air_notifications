@@ -4,8 +4,31 @@ AIR contracts for application push configuration and device registrations, with 
 push delivery server. This crate does not depend on Maverick OS, Prism, or RAMP.
 
 Applications and deployment tools use the library without features. RAMP converts its native
-Maverick `PushDestination` into this crate's `PushDestination` and drives `Notifications` through
+Maverick `PushToken` into this crate's `PushDestination` and drives `Notifications` through
 its ordinary shared AIR instance services. The library supports APNs and FCM destinations.
+
+Version 0.2 uses AIR 4 and AIR Server 2. The push server stores its account catalog under the
+`air` cache key. On its first start with this version, it reconstructs that catalog by replaying
+the existing encrypted inbox and storage channels; contract registrations retain their IDs.
+
+## Client policy
+
+`Subscription::new(instance_id)` owns an instance's notification preference and whether it has
+caught up to the channel head. `notify(enabled, subscription)` returns the actions needed when
+that preference changes. `response(output, received_file, subscription)` processes AIR outputs
+and returns `Action::Local(header, body)` or `Action::Remote(Notification)` values for the runtime
+to execute. Pass the current subscription before preparing the instance's next request.
+
+Historical replay does not alert. After reaching the channel head, incoming reads alert and
+acknowledge their file; confirmation of a local write only acknowledges it. Subscription outputs
+arm the next watch or remove it when notifications are disabled. `start()` resets catch-up state
+while preserving the preference. Construct a fresh `Subscription` when restoring an instance;
+this local policy is not serialized into the notification contract.
+
+`Notifications::changes(message)` checks whether a contract message would change the current
+state. Runtimes use it before sending redundant watches or stale acknowledgments. Contract
+application uses the same check after verifying the signer. Token registration, task scheduling,
+native alert presentation, and sending AIR messages remain responsibilities of the runtime.
 
 ## Contracts
 

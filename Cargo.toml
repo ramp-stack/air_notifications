@@ -1,6 +1,6 @@
 [package]
 name = "air_notifications"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["Caleb Couch <caleb@orange.me>"]
 license = "BSD-3-Clause"
@@ -17,9 +17,9 @@ server = [
 ]
 
 [dependencies]
-air = "3.0.1"
+air = {version = "4.0.0", path = "../air"}
 serde = {version = "1", features = ["derive"]}
-air_server = {version = "1.0.2", optional = true}
+air_server = {version = "2.0.0", path = "../air_server", optional = true}
 crossfire = {version = "3.1.7", optional = true}
 futures = {version = "0.3", optional = true}
 tokio = {version = "1.53", features = ["sync", "macros", "rt-multi-thread", "time"], optional = true}

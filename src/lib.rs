@@ -1,4 +1,4 @@
-use air::{Contract, Id, Metadata, Name, PublicKey};
+use air::{Contract, Id, Metadata, Name, Output, PublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
@@ -95,6 +95,12 @@ pub enum Notification {
     Remove(Id),
 }
 
+#[derive(Clone, Debug)]
+pub enum Action {
+    Local(&'static str, &'static str),
+    Remote(Notification),
+}
+
 #[derive(Clone, Debug, Hash, Serialize, Deserialize)]
 pub struct Notifications {
     pub owner: Name,
@@ -112,26 +118,73 @@ impl Contract for Notifications {
         Self { owner: metadata.signer, application, destination: None, files: BTreeMap::new() }
     }
     fn apply(&mut self, message: Notification, metadata: Metadata) -> bool {
-        if metadata.signer != self.owner { return false; }
+        if metadata.signer != self.owner || !self.changes(&message) {return false;}
         match message {
-            Notification::Destination(destination) => {
-                if self.destination.as_ref() == Some(&destination) { return false; }
-                self.destination = Some(destination);
-                true
-            }
+            Notification::Destination(destination) => self.destination = Some(destination),
             Notification::Watch(instance, key, server) => {
-                self.files.insert(instance, (key, server)) != Some((key, server))
+                self.files.insert(instance, (key, server));
             }
-            Notification::Received(instance, key, server) => {
-                if self.files.get(&instance) != Some(&(key, server)) { return false; }
+            Notification::Received(instance, _, _) | Notification::Remove(instance) => {
                 self.files.remove(&instance);
-                true
             }
-            Notification::Remove(instance) => self.files.remove(&instance).is_some(),
         }
+        true
     }
 }
 
 impl Notifications {
     pub fn server() -> Name { include_str!("server.name").trim().parse().unwrap() }
+    pub fn changes(&self, message: &Notification) -> bool {
+        match message {
+            Notification::Destination(destination) => self.destination.as_ref() != Some(destination),
+            Notification::Watch(instance, key, server) => {
+                self.files.get(instance) != Some(&(*key, *server))
+            }
+            Notification::Received(instance, key, server) => {
+                self.files.get(instance) == Some(&(*key, *server))
+            }
+            Notification::Remove(instance) => self.files.contains_key(instance),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Subscription {
+    instance: Id,
+    live: bool,
+    enabled: bool,
+}
+impl Subscription {
+    pub fn new(instance: Id) -> Self {Self {instance, live: false, enabled: false}}
+    pub fn start(&mut self) {self.live = false;}
+    pub fn notify(&mut self, enabled: bool, subscription: Option<File>) -> Vec<Action> {
+        self.enabled = enabled;
+        if !enabled {return vec![Action::Remote(Notification::Remove(self.instance))]}
+        if self.live && let Some((key, server)) = subscription {
+            return vec![Action::Remote(Notification::Watch(self.instance, key, server))]
+        }
+        vec![]
+    }
+    pub fn response<R>(&mut self, output: &Output<R>, received: File, subscription: Option<File>) -> Vec<Action> {
+        let mut actions = vec![];
+        if self.enabled && self.live {
+            if matches!(output, Output::Read(_, _)) {
+                actions.push(Action::Local("New activity", "You have a notification."));
+            }
+            if matches!(output, Output::Read(_, _) | Output::Created(_, _)) {
+                actions.push(Action::Remote(Notification::Received(
+                    self.instance, received.0, received.1,
+                )));
+            }
+        }
+        if matches!(output, Output::Subscribed) {
+            self.live = true;
+            if let Some((key, server)) = subscription {
+                let message = if self.enabled {Notification::Watch(self.instance, key, server)}
+                    else {Notification::Remove(self.instance)};
+                actions.push(Action::Remote(message));
+            }
+        }
+        actions
+    }
 }

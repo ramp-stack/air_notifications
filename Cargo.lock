@@ -4,9 +4,7 @@ version = 4
 
 [[package]]
 name = "air"
-version = "3.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "568f9d4b0fb44b035d1ba84eca7a706f399d9aed6620d9f7cb1e2247b4b7a312"
+version = "4.0.0"
 dependencies = [
  "chacha20-poly1305",
  "chrono",
@@ -24,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "air_notifications"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "air",
  "air_server",
@@ -42,9 +40,7 @@ dependencies = [
 
 [[package]]
 name = "air_server"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4ecd67629068046d8bfab5af70d56ae3aefa8b3b692f2baa7998b8ac1c633c"
+version = "2.0.0"
 dependencies = [
  "air",
  "arc-swap",

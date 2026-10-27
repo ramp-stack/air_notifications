@@ -1,5 +1,5 @@
 use ::air::{
-    Contract, DefaultResolver, Id, Inbox, Instance, Location, Name, Request, RequestType, Resolver,
+    Air, Contract, DefaultResolver, Id, Instance, Location, Name, Request, RequestType, Resolver,
     Response, Secret,
 };
 use air_server::Client;
@@ -22,9 +22,11 @@ use crate::{
 mod fcm;
 use fcm::Fcm;
 
+type Responses = AsyncRx<spsc::List<Response>>;
+
 pub struct NotificationServer {
     secret: Secret,
-    inbox: Inbox,
+    air: Air,
     cache: Cache,
     network: Arc<Network>,
     providers: watch::Sender<HashMap<Id, Arc<Provider>>>,
@@ -40,10 +42,10 @@ impl NotificationServer {
         let secret = air_server::Server::secret(Path::new(&path));
         println!("Notification server: {}", secret.name());
         let cache = Cache::new(Path::new(&path));
-        let inbox = cache.load("inbox").unwrap_or_else(|| Inbox::new(secret.clone()).unwrap());
+        let air = cache.load("air").unwrap_or_else(|| Air::new(secret.clone()).unwrap());
         let server = Self {
             secret,
-            inbox,
+            air,
             cache,
             network: Arc::new(Network::default()),
             providers: watch::channel(HashMap::new()).0,
@@ -57,10 +59,10 @@ impl NotificationServer {
 
     async fn run(mut self) {
         for contract in [NotificationApplication::id(), FcmApplication::id(), Notifications::id()] {
-            for location in self.inbox.list(&contract) { self.register(location); }
+            for location in self.air.list(&contract) { self.register(location); }
         }
-        let requests = self.inbox.start();
-        self.cache.save("inbox", &self.inbox);
+        let requests = self.air.start();
+        self.cache.save("air", &self.air);
         for (kind, request) in requests {
             let responses = self.network.send(Name::orange_me(), request).await;
             self.streams.insert(kind, responses);
@@ -81,10 +83,10 @@ impl NotificationServer {
                 }
             };
             if !matches!(response, Response::Read(_, None)) { self.streams.remove(&kind); }
-            let location = self.inbox.response(&mut self.resolver, kind, response).await;
-            let requests = self.inbox.requests();
-            self.cache.save("inbox", &self.inbox);
-            if let Some((_, location)) = location { self.register(location); }
+            let location = self.air.response(&mut self.resolver, kind, response).await;
+            let requests = self.air.requests();
+            self.cache.save("air", &self.air);
+            if let Some(location) = location { self.register(location); }
             for (kind, request) in requests {
                 let responses = self.network.send(Name::orange_me(), request).await;
                 self.streams.insert(kind, responses);
@@ -137,8 +139,6 @@ impl NotificationServer {
         self.registrations.spawn(application.run());
     }
 }
-
-type Responses = AsyncRx<spsc::List<Response>>;
 
 trait ApplicationConfiguration: Contract {
     fn provider(&self) -> Result<Option<Provider>, String>;
