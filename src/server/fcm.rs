@@ -80,11 +80,10 @@ impl Fcm {
                         Ok(value) => {
                             if let (Some(token), Some(expires)) =
                                 (value["access_token"].as_str(), value["expires_in"].as_u64())
+                                && !token.is_empty() && expires > 60
                             {
-                                if !token.is_empty() && expires > 60 {
-                                    *saved = (now.saturating_add(expires), token.to_owned());
-                                    return Some(token.to_owned());
-                                }
+                                *saved = (now.saturating_add(expires), token.to_owned());
+                                return Some(token.to_owned());
                             }
                             eprintln!("FCM OAuth returned an invalid token response");
                         }

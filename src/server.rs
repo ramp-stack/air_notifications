@@ -332,8 +332,8 @@ impl Registration {
     async fn cancel(&mut self) {
         self.tasks.abort_all();
         while let Some(task) = self.tasks.join_next().await {
-            if let Err(error) = task {
-                if !error.is_cancelled() { panic!("Notification worker failed: {error}") }
+            if let Err(error) = task && !error.is_cancelled() {
+                panic!("Notification worker failed: {error}")
             }
         }
         self.jobs.clear();
