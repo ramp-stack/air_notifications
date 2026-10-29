@@ -156,6 +156,7 @@ pub struct Subscription {
 }
 impl Subscription {
     pub fn new(instance: Id) -> Self {Self {instance, live: false, enabled: false}}
+    pub fn enabled(&self) -> bool {self.enabled}
     pub fn start(&mut self) {self.live = false;}
     pub fn notify(&mut self, enabled: bool, subscription: Option<File>) -> Vec<Action> {
         self.enabled = enabled;
