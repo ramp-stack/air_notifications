@@ -111,24 +111,24 @@ pub struct Notifications {
 impl Contract for Notifications {
     type Init = (String, Id);
     type Message = Notification;
-    type Result = bool;
+    type Result = Option<Notification>;
 
     fn id() -> Id { Id::hash("ramp.notifications.v2") }
     fn init((_installation, application): Self::Init, metadata: Metadata) -> Self {
         Self { owner: metadata.signer, application, destination: None, files: BTreeMap::new() }
     }
-    fn apply(&mut self, message: Notification, metadata: Metadata) -> bool {
-        if metadata.signer != self.owner || !self.changes(&message) {return false;}
-        match message {
-            Notification::Destination(destination) => self.destination = Some(destination),
+    fn apply(&mut self, message: Notification, metadata: Metadata) -> Option<Notification> {
+        if metadata.signer != self.owner || !self.changes(&message) {return None;}
+        match &message {
+            Notification::Destination(destination) => self.destination = Some(destination.clone()),
             Notification::Watch(instance, key, server) => {
-                self.files.insert(instance, (key, server));
+                self.files.insert(*instance, (*key, *server));
             }
             Notification::Received(instance, _, _) | Notification::Remove(instance) => {
-                self.files.remove(&instance);
+                self.files.remove(instance);
             }
         }
-        true
+        Some(message)
     }
 }
 
@@ -136,7 +136,7 @@ impl Notifications {
     pub fn server() -> Name { include_str!("server.name").trim().parse().unwrap() }
     pub fn changes(&self, message: &Notification) -> bool {
         match message {
-            Notification::Destination(destination) => self.destination.as_ref() != Some(destination),
+            Notification::Destination(_) => true,
             Notification::Watch(instance, key, server) => {
                 self.files.get(instance) != Some(&(*key, *server))
             }

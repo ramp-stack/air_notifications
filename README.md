@@ -25,10 +25,11 @@ arm the next watch or remove it when notifications are disabled. `start()` reset
 while preserving the preference. Construct a fresh `Subscription` when restoring an instance;
 this local policy is not serialized into the notification contract.
 
-`Notifications::changes(message)` checks whether a contract message would change the current
-state. Runtimes use it before sending redundant watches or stale acknowledgments. Contract
-application uses the same check after verifying the signer. Token registration, task scheduling,
-native alert presentation, and sending AIR messages remain responsibilities of the runtime.
+`Notifications::changes(message)` checks whether a contract message should be applied. Runtimes
+use it to skip redundant watches or stale acknowledgments. An authenticated `Destination` message
+always renews registration, even when its token is unchanged. Contract application returns the
+accepted message so the server can distinguish renewal from a watch update. Token registration,
+task scheduling, native alerts, and sending AIR messages remain runtime responsibilities.
 
 ## Contracts
 
@@ -82,12 +83,17 @@ When a watched file appears, the server waits 500 ms before sending the fixed al
 acknowledgment cancels pending delivery. Late or lost acknowledgments can still produce a
 duplicate. A watch covers one file; the application must register the next file after catching up.
 
-APNs and FCM temporary failures retry. FCM honors Retry-After, backs off with jitter, refreshes
-OAuth access tokens, and pauses permanent failures until credentials or the destination change. Invalid destinations pause that registration until its destination
-or application configuration changes. A crash after Apple accepts an alert but before completion
-is saved can repeat it; stable APNs collapse IDs reduce queued duplicates. Existing AIR
-session and subscription limits apply. FCM uses a stable Android notification tag to replace
-retries of the same alert in the tray. Notification delivery is best effort, not exactly once.
+APNs and FCM temporary failures retry. FCM honors Retry-After, backs off with jitter, and refreshes
+OAuth access tokens. APNs refreshes expired provider authorization once. Invalid device tokens
+persistently pause their registration; provider configuration failures pause delivery only in the
+running process. A fresh authenticated destination registration, including the same token, or an
+application configuration update resumes delivery. Renewal cancels and drains older delivery jobs
+before rescheduling, so stale failures cannot disable the renewed registration.
+
+A crash after Apple accepts an alert but before completion is saved can repeat it; stable APNs
+collapse IDs reduce queued duplicates. Existing AIR session and subscription limits apply. FCM
+uses a stable Android notification tag to replace retries of the same alert in the tray.
+Notification delivery is best effort, not exactly once.
 Real Apple delivery requires valid Apple credentials, matching
 entitlements, the correct sandbox/production environment, and a device token.
 

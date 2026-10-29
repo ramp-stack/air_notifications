@@ -4,6 +4,7 @@ use ring::{ rand::{SecureRandom, SystemRandom}, signature::{RsaKeyPair, RSA_PKCS
 use tokio::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::FcmCredentials;
+use super::Delivery;
 
 pub struct Fcm {
     client: reqwest::Client,
@@ -94,7 +95,9 @@ impl Fcm {
                 Ok(response) => {
                     let status = response.status();
                     if status.as_u16() != 429 && !status.is_server_error() {
-                        eprintln!("FCM OAuth rejected credentials: {status}");
+                        let error = response.json::<serde_json::Value>().await.unwrap_or_default();
+                        let reason = error["error"].as_str().unwrap_or("unknown");
+                        eprintln!("FCM OAuth rejected credentials: {status} {reason}");
                         return None;
                     }
                     eprintln!("FCM OAuth temporarily unavailable: {status}");
@@ -110,8 +113,8 @@ impl Fcm {
         }
     }
 
-    pub async fn send(&self, token: &str, id: Id) -> bool {
-        if token.is_empty() { return false; }
+    pub async fn send(&self, token: &str, id: Id) -> Delivery {
+        if token.is_empty() { return Delivery::Invalid; }
         let payload = serde_json::json!({"message": {
             "token": token,
             "notification": {"title": "New activity", "body": "You have a notification."},
@@ -123,7 +126,7 @@ impl Fcm {
         let mut refreshed = false;
         let mut delay = Duration::from_secs(1);
         loop {
-            let Some(authorization) = self.authorization().await else { return false };
+            let Some(authorization) = self.authorization().await else { return Delivery::Blocked };
             let response = self
                 .client
                 .post(&self.endpoint)
@@ -132,7 +135,7 @@ impl Fcm {
                 .send()
                 .await;
             let retry = match response {
-                Ok(response) if response.status().is_success() => return true,
+                Ok(response) if response.status().is_success() => return Delivery::Sent,
                 Ok(response) => {
                     let status = response.status();
                     if status.as_u16() == 401 && !refreshed {
@@ -142,10 +145,24 @@ impl Fcm {
                         continue;
                     }
                     if status.as_u16() != 429 && !status.is_server_error() {
-                        // Invalid/unregistered tokens and permanent configuration errors require
-                        // a new destination or application configuration before trying again.
-                        eprintln!("FCM rejected notification for {}: {status}", self.package);
-                        return false;
+                        let error = response.json::<serde_json::Value>().await.unwrap_or_default();
+                        let details = error["error"]["details"].as_array()
+                            .map(Vec::as_slice).unwrap_or_default();
+                        let reason = details.iter().find(|detail| {
+                            detail["@type"] == "type.googleapis.com/google.firebase.fcm.v1.FcmError"
+                        }).and_then(|detail| detail["errorCode"].as_str());
+                        let invalid_token = details.iter().any(|detail| {
+                            detail["@type"] == "type.googleapis.com/google.rpc.BadRequest"
+                                && detail["fieldViolations"].as_array().is_some_and(|violations| {
+                                    violations.iter().any(|item| item["field"] == "message.token")
+                                })
+                        });
+                        eprintln!(
+                            "FCM rejected notification for {}: {status} {}", self.package,
+                            reason.or_else(|| error["error"]["status"].as_str()).unwrap_or("unknown")
+                        );
+                        return if reason == Some("UNREGISTERED") || invalid_token { Delivery::Invalid }
+                            else { Delivery::Blocked };
                     }
                     if status.as_u16() == 429 { delay = delay.max(Duration::from_secs(60)); }
                     eprintln!(

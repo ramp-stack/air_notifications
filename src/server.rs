@@ -1,5 +1,5 @@
 use ::air::{
-    Air, Contract, DefaultResolver, Id, Instance, Location, Name, Request, RequestType, Resolver,
+    Air, Contract, DefaultResolver, Id, Instance, Location, Name, Output, Request, RequestType, Resolver,
     Response, Secret,
 };
 use air_server::Client;
@@ -16,7 +16,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{
-    ApnsCredentials, FcmApplication, File, NotificationApplication, Notifications, PushDestination,
+    ApnsCredentials, FcmApplication, File, Notification, NotificationApplication, Notifications,
+    PushDestination,
 };
 
 mod fcm;
@@ -122,6 +123,7 @@ impl NotificationServer {
             providers: self.providers.clone(),
             jobs: HashMap::new(),
             tasks: JoinSet::new(),
+            blocked: false,
         };
         self.registrations.spawn(registration.run());
     }
@@ -138,6 +140,17 @@ impl NotificationServer {
         };
         self.registrations.spawn(application.run());
     }
+}
+
+enum Delivery { Sent, Invalid, Blocked, }
+enum Event { Available(File), Delivered(File, PushDestination, Delivery), }
+
+#[derive(Serialize, Deserialize)]
+struct RegistrationState {
+    instance: Instance<Notifications>,
+    ready: BTreeSet<File>,
+    completed: BTreeSet<File>,
+    inactive: bool,
 }
 
 trait ApplicationConfiguration: Contract {
@@ -162,16 +175,6 @@ impl ApplicationConfiguration for FcmApplication {
             })
             .transpose()
     }
-}
-
-enum Event { Available(File), Delivered(File, PushDestination, bool), }
-
-#[derive(Serialize, Deserialize)]
-struct RegistrationState {
-    instance: Instance<Notifications>,
-    ready: BTreeSet<File>,
-    completed: BTreeSet<File>,
-    inactive: bool,
 }
 
 #[derive(Clone)]
@@ -251,6 +254,7 @@ struct Registration {
     providers: watch::Sender<HashMap<Id, Arc<Provider>>>,
     jobs: HashMap<File, AbortHandle>,
     tasks: JoinSet<Event>,
+    blocked: bool,
 }
 impl Registration {
     async fn run(mut self) {
@@ -259,33 +263,26 @@ impl Registration {
         self.save();
         let mut responses = self.network.send(server, request).await;
         let mut resolver = DefaultResolver::default();
-        self.schedule();
         let mut providers = self.providers.subscribe();
         let mut configuration = self
             .state
             .instance
             .confirmed()
             .and_then(|state| providers.borrow().get(&state.application).cloned());
+        self.schedule();
         loop {
             tokio::select! {
-                changed = providers.changed() => {
-                    changed.unwrap();
-                    let current = self.state.instance.confirmed()
-                        .and_then(|state| providers.borrow().get(&state.application).cloned());
-                    let changed = match (&configuration, &current) {
-                        (Some(previous), Some(current)) => !Arc::ptr_eq(previous, current),
-                        (None, None) => false,
-                        _ => true,
-                    };
-                    if changed { self.state.inactive = false; self.cancel().await; }
-                }
+                changed = providers.changed() => changed.unwrap(),
                 response = responses.recv() => {
-                    let previous = self.state.instance.confirmed()
-                        .and_then(|state| state.destination.clone());
-                    self.state.instance.response(&mut resolver, response.unwrap()).await;
-                    let current = self.state.instance.confirmed()
-                        .and_then(|state| state.destination.clone());
-                    if current != previous { self.state.inactive = false; self.cancel().await; }
+                    let output = self.state.instance.response(&mut resolver, response.unwrap()).await;
+                    if matches!(output,
+                        Output::Created(Some(Notification::Destination(_)), _)
+                            | Output::Read(Some(Notification::Destination(_)), _)
+                    ) {
+                        self.state.inactive = false;
+                        self.blocked = false;
+                        self.cancel().await;
+                    }
                     let active: BTreeSet<File> = self.state.instance.confirmed()
                         .map(|state| state.files.values().copied().collect()).unwrap_or_default();
                     if self.jobs.keys().any(|file| !active.contains(file)) {self.cancel().await;}
@@ -307,12 +304,19 @@ impl Registration {
                             let current = &self.state.instance.confirmed().unwrap().destination;
                             if current.as_ref() != Some(&destination) {continue}
                             self.jobs.remove(&file);
-                            if delivered {
-                                self.state.ready.remove(&file);
-                                self.state.completed.insert(file);
-                            } else {
-                                self.state.inactive = true;
-                                self.cancel().await;
+                            match delivered {
+                                Delivery::Sent => {
+                                    self.state.ready.remove(&file);
+                                    self.state.completed.insert(file);
+                                }
+                                Delivery::Invalid => {
+                                    self.state.inactive = true;
+                                    self.cancel().await;
+                                }
+                                Delivery::Blocked => {
+                                    self.blocked = true;
+                                    self.cancel().await;
+                                }
                             }
                         }
                         Err(error) if error.is_cancelled() => continue,
@@ -321,12 +325,24 @@ impl Registration {
                     self.save();
                 }
             }
-            self.schedule();
-            configuration = self
+            let current = self
                 .state
                 .instance
                 .confirmed()
                 .and_then(|state| providers.borrow().get(&state.application).cloned());
+            let changed = match (&configuration, &current) {
+                (Some(previous), Some(current)) => !Arc::ptr_eq(previous, current),
+                (None, None) => false,
+                _ => true,
+            };
+            if changed {
+                self.state.inactive = false;
+                self.blocked = false;
+                self.cancel().await;
+                self.save();
+            }
+            configuration = current;
+            self.schedule();
         }
     }
     async fn cancel(&mut self) {
@@ -341,7 +357,7 @@ impl Registration {
     fn save(&self) { self.cache.save(&self.id.to_string(), &self.state) }
     fn schedule(&mut self) {
         let Some(state) = self.state.instance.confirmed() else { return };
-        if self.state.inactive { return; }
+        if self.state.inactive || self.blocked { return; }
         let Some(destination) = state.destination.clone() else { return };
         let providers = self.providers.borrow();
         let Some(provider) = providers.get(&state.application) else { return };
@@ -415,11 +431,14 @@ impl<C: ApplicationConfiguration> Application<C> {
 
 enum Provider { Apns(Apns), Fcm(Fcm), }
 impl Provider {
-    async fn send(&self, destination: &PushDestination, id: Id) -> bool {
+    async fn send(&self, destination: &PushDestination, id: Id) -> Delivery {
         match (self, destination) {
             (Self::Apns(provider), PushDestination::Apns(token)) => provider.send(token, id).await,
             (Self::Fcm(provider), PushDestination::Fcm(token)) => provider.send(token, id).await,
-            _ => { eprintln!("Push destination does not match its application's provider"); false }
+            _ => {
+                eprintln!("Push destination does not match its application's provider");
+                Delivery::Blocked
+            }
         }
     }
 }
@@ -483,14 +502,18 @@ impl Apns {
         }
         saved.1.clone()
     }
-    async fn send(&self, token: &str, id: Id) -> bool {
-        if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) { return false; }
+    async fn send(&self, token: &str, id: Id) -> Delivery {
+        if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Delivery::Invalid;
+        }
         let payload = serde_json::json!({"aps": {"alert": "You have a notification."}});
+        let mut refreshed = false;
         loop {
+            let authorization = self.authorization();
             let response = self
                 .client
                 .post(format!("{}/3/device/{token}", self.endpoint))
-                .bearer_auth(self.authorization())
+                .bearer_auth(&authorization)
                 .header("apns-topic", &self.topic)
                 .header("apns-push-type", "alert")
                 .header("apns-priority", "10")
@@ -499,7 +522,7 @@ impl Apns {
                 .send()
                 .await;
             match response {
-                Ok(response) if response.status().is_success() => return true,
+                Ok(response) if response.status().is_success() => return Delivery::Sent,
                 Ok(response) => {
                     let status = response.status();
                     let retry = response
@@ -512,21 +535,22 @@ impl Apns {
                     let reason: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     let reason =
                         reason.get("reason").and_then(|value| value.as_str()).unwrap_or("");
-                    if status.as_u16() == 410
-                        || matches!(
-                            reason,
-                            "BadDeviceToken"
-                                | "DeviceTokenNotForTopic"
-                                | "Unregistered"
-                                | "ExpiredToken"
-                        )
-                    { return false; }
+                    if status.as_u16() == 403 && reason == "ExpiredProviderToken" && !refreshed {
+                        let mut saved = self.authorization.lock().unwrap();
+                        if saved.1 == authorization { saved.1.clear(); }
+                        refreshed = true;
+                        continue;
+                    }
+                    if status.as_u16() == 410 || reason == "BadDeviceToken" {
+                        eprintln!("APNs rejected a device token for {}: {status} {reason}", self.topic);
+                        return Delivery::Invalid;
+                    }
                     if status.as_u16() != 429 && !status.is_server_error() {
                         eprintln!(
                             "APNs rejected a notification for {}: {status} {reason}",
                             self.topic
                         );
-                        return false;
+                        return Delivery::Blocked;
                     }
                     eprintln!("APNs temporarily rejected a notification: {status} {reason}");
                     tokio::time::sleep(Duration::from_secs(retry)).await;
